@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Screen Ruler: actual-size ruler in cm and inches</title>
+<meta name="description" content="Turn your phone or laptop screen into an actual-size ruler in centimetres and inches. Free, no app needed.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📏</text></svg>">
+<style>
+html,body{height:100%}
+body{overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none;touch-action:none}
+#ruler{position:fixed;inset:0;width:100%;height:100%;display:block}
+.hud{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(300px,calc(100vw - 130px));
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
+.hud h1{font-size:17px;font-weight:700;margin-bottom:6px}
+.hud p{font-size:13.5px;line-height:1.45;color:var(--muted);margin-bottom:6px}
+.hud p.edges{color:var(--ink)}
+.hud .warn{color:var(--blue)}
+.hud .actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
+.hud .actions button,.hud .actions a{padding:8px 11px;font-size:14px}
+.float{position:fixed;padding:8px 14px;font-size:14px}
+body.portrait #menu{left:50%;bottom:16px;transform:translateX(-50%)}
+body.landscape #menu{right:16px;top:50%;transform:translateY(-50%)}
+body.portrait #useLen{left:50%;bottom:62px;transform:translateX(-50%)}
+body.landscape #useLen{right:16px;top:calc(50% + 28px)}
+</style>
+</head>
+<body class="portrait">
+
+<canvas id="ruler" aria-label="On-screen ruler"></canvas>
+
+<div id="hud" class="hud" hidden>
+  <h1>Screen Ruler</h1>
+  <p id="edges" class="edges"></p>
+  <p id="source"></p>
+  <p id="autoWarn" class="warn" hidden>Found automatically. Check it once against a card to be sure.</p>
+  <p id="hint">Tap or drag anywhere to measure.</p>
+  <div class="actions">
+    <button id="recal">Recalibrate</button>
+    <a class="btn" href="ring.html">Ring size</a>
+    <button id="fs" hidden>Full screen</button>
+    <button id="hide">Hide</button>
+  </div>
+</div>
+<button id="menu" class="float" hidden>Menu</button>
+<button id="useLen" class="float primary" hidden></button>
+
+<script src="shared.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('ruler');
+const fromRing = new URLSearchParams(location.search).get('from') === 'ring';
+let markerMm = null, dragging = false;
+
+if (fromRing) $('hint').textContent = 'Lay your paper strip from the 0 edge, then tap where your pen mark is.';
+
+function showHud(){ $('hud').hidden = false; $('menu').hidden = true; updateHud(); }
+function hideHud(){ $('hud').hidden = true; $('menu').hidden = false; }
+function updateHud(){
+  const st = SR.state; if (!st) return;
+  $('edges').textContent = SR.isPortrait()
+    ? 'Centimetres on the left edge, inches on the right.'
+    : 'Centimetres along the top, inches along the bottom.';
+  let src = `${st.label}. Screen works out to ${SR.impliedDiagonal().toFixed(2)}″ diagonal.`;
+  if (st.model) src += ` Model code: ${st.model}.`;
+  $('source').textContent = src;
+  $('autoWarn').hidden = st.method !== 'auto';
+}
+function updateUseLen(){
+  const b = $('useLen');
+  if (!fromRing || markerMm == null || !SR.state){ b.hidden = true; return; }
+  b.hidden = false;
+  b.textContent = `Use ${(markerMm / 10).toFixed(1)} cm for ring size`;
+}
+$('useLen').onclick = () => { location.href = 'ring.html?c=' + markerMm.toFixed(1); };
+
+$('recal').onclick = () => SR.showSetup();
+$('hide').onclick = hideHud;
+$('menu').onclick = showHud;
+if (document.fullscreenEnabled){
+  $('fs').hidden = false;
+  $('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(()=>{});
+}
+
+function draw(){
+  const W = innerWidth, H = innerHeight, dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  const col = n => css.getPropertyValue(n).trim();
+  const portrait = SR.isPortrait();
+  document.body.className = portrait ? 'portrait' : 'landscape';
+  ctx.fillStyle = col('--steel'); ctx.fillRect(0, 0, W, H);
+  if (!SR.state) return;
+
+  const ppi = SR.state.ppi, ppm = ppi / 25.4;
+  const L = portrait ? H : W;
+  const snap = t => dpr >= 2 ? t : Math.round(t) + 0.5;
+  const P = (t, d, side) => portrait ? [side ? W - d : d, t] : [t, side ? H - d : d];
+  const tick = (t, len, side, w) => {
+    const a = P(snap(t), 0, side), b = P(snap(t), len, side);
+    ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  };
+  const label = (t, txt, side, size, color) => {
+    ctx.fillStyle = color; ctx.font = `600 ${size}px "Segoe UI",Roboto,system-ui,sans-serif`;
+    const [x, y] = P(t, 34, side);
+    if (portrait){ ctx.textAlign = side ? 'right' : 'left'; ctx.textBaseline = t < 8 ? 'top' : 'middle'; }
+    else { ctx.textAlign = t < 8 ? 'left' : 'center'; ctx.textBaseline = side ? 'bottom' : 'top'; }
+    ctx.fillText(txt, x, y);
+  };
+
+  ctx.strokeStyle = col('--ink');
+  for (let i = 0; i * ppm <= L + 0.5; i++){
+    const t = i * ppm;
+    tick(t, i % 10 === 0 ? 28 : i % 5 === 0 ? 20 : 12, 0, i % 10 === 0 ? 1.5 : 1);
+    if (i % 10 === 0) label(t, String(i / 10), 0, 14, col('--ink'));
+  }
+  for (let j = 0; j * ppi / 16 <= L + 0.5; j++){
+    const t = j * ppi / 16;
+    const len = j % 16 === 0 ? 28 : j % 8 === 0 ? 22 : j % 4 === 0 ? 17 : j % 2 === 0 ? 13 : 8;
+    tick(t, len, 1, j % 16 === 0 ? 1.5 : 1);
+    if (j % 16 === 0) label(t, String(j / 16), 1, 14, col('--ink'));
+  }
+  label(5 * ppm, 'cm', 0, 11, col('--muted'));
+  label(ppi / 2, 'in', 1, 11, col('--muted'));
+
+  if (markerMm != null){
+    const t = markerMm * ppm;
+    ctx.strokeStyle = col('--signal'); ctx.lineWidth = 2;
+    ctx.beginPath();
+    if (portrait){ ctx.moveTo(0, t); ctx.lineTo(W, t); } else { ctx.moveTo(t, 0); ctx.lineTo(t, H); }
+    ctx.stroke();
+    const txt = `${(markerMm / 10).toFixed(2)} cm   ${(markerMm / 25.4).toFixed(2)} in`;
+    ctx.font = '700 16px "Segoe UI",Roboto,system-ui,sans-serif';
+    const w = ctx.measureText(txt).width + 22, h = 30;
+    let x, y;
+    if (portrait){ x = (W - w) / 2; y = t > 50 ? t - h - 8 : t + 8; }
+    else { y = (H - h) / 2; x = t + w + 18 < W ? t + 10 : t - w - 10; }
+    ctx.fillStyle = col('--signal');
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x, y, w, h, 6) : ctx.rect(x, y, w, h);
+    ctx.fill();
+    ctx.fillStyle = col('--signal-ink'); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, x + w / 2, y + h / 2 + 1);
+  }
+}
+
+function setMarker(e){
+  markerMm = Math.max(0, (SR.isPortrait() ? e.clientY : e.clientX) / SR.ppm());
+  draw(); updateUseLen();
+}
+cv.addEventListener('pointerdown', e => {
+  if (!SR.state) return;
+  dragging = true; cv.setPointerCapture(e.pointerId);
+  if (!$('hud').hidden) hideHud();
+  setMarker(e);
+});
+cv.addEventListener('pointermove', e => { if (dragging && SR.state) setMarker(e); });
+addEventListener('pointerup', () => dragging = false);
+addEventListener('pointercancel', () => dragging = false);
+addEventListener('keydown', e => {
+  if (!SR.state) return;
+  const step = e.shiftKey ? 25.4 / 16 : 0.5;
+  if (['ArrowDown','ArrowRight'].includes(e.key)) markerMm = (markerMm || 0) + step;
+  else if (['ArrowUp','ArrowLeft'].includes(e.key)) markerMm = Math.max(0, (markerMm || 0) - step);
+  else return;
+  e.preventDefault(); draw(); updateUseLen();
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', draw);
+
+SR.start({
+  title: 'Screen Ruler',
+  onReady(){ showHud(); draw(); updateUseLen(); },
+  onSetup(){ $('hud').hidden = true; $('menu').hidden = true; markerMm = null; updateUseLen(); draw(); },
+  onResize(){ updateHud(); draw(); }
+});
+</script>
+</body>
+</html>
